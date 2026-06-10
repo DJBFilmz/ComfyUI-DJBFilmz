@@ -87,12 +87,14 @@ app.registerExtension({
                 const camParamsWidget = this.widgets?.find(w => w.name === "camera_parameters");
                 const lockedImageWidget = this.widgets?.find(w => w.name === "locked_image_path");
 
-                // Collapse their size so they do not clutter the node UI, keeping them fully serializable
+                // Collapse their size and set hidden state to prevent overlapping/clutter in ComfyUI
                 if (camParamsWidget) {
-                    camParamsWidget.computeSize = () => [0, 0];
+                    camParamsWidget.computeSize = () => [0, -4];
+                    camParamsWidget.hidden = true;
                 }
                 if (lockedImageWidget) {
-                    lockedImageWidget.computeSize = () => [0, 0];
+                    lockedImageWidget.computeSize = () => [0, -4];
+                    lockedImageWidget.hidden = true;
                 }
 
                 // Create container for viewer + info panel
@@ -103,6 +105,9 @@ app.registerExtension({
                 container.style.flexDirection = "column";
                 container.style.backgroundColor = "#1a1a1a";
                 container.style.overflow = "hidden";
+                container.style.marginTop = "8px"; // Spacing below the coordinate_basis dropdown
+                container.style.borderRadius = "4px";
+                container.style.border = "1px solid #2a2a2a";
 
                 // Create iframe for gsplat.js viewer
                 const iframe = document.createElement("iframe");
@@ -145,13 +150,21 @@ app.registerExtension({
                         return [width, 80];
                     }
                     const top = this.last_y ?? 120;
-                    const height = Math.max(80, node.size[1] - top - 8);
+                    // Adjusted offset from -8 to -20 to keep clear of the bottom resize handle
+                    const height = Math.max(80, node.size[1] - top - 20);
                     return [width, height];
                 };
 
                 // Store references
                 this.gaussianViewerIframe = iframe;
                 this.gaussianInfoPanel = infoPanel;
+
+				// Auto-focus iframe on hover so its internal shortcuts work immediately
+                container.addEventListener("mouseenter", () => {
+                    if (iframe.contentWindow) {
+                        iframe.contentWindow.focus();
+                    }
+                });
 
                 // Track iframe load state
                 let iframeLoaded = false;

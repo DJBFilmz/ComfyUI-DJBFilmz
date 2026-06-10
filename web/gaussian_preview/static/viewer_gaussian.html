@@ -171,6 +171,30 @@
             display: none;
         }
 
+        /* Camera State HUD Styles */
+        .camera-state-panel {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 8px 12px;
+            border-radius: 4px;
+            color: #aaa;
+            font-size: 11px;
+            font-family: monospace;
+            z-index: 50;
+            pointer-events: none; /* Prevents blocking clicks on canvas background */
+            text-align: left;
+        }
+
+        .hud-title {
+            color: #6cc;
+            font-weight: 600;
+            margin-bottom: 4px;
+            border-bottom: 1px solid #444;
+            padding-bottom: 2px;
+        }
+
         /* Modal Overlay & Window Styles */
         .modal-overlay {
             position: absolute;
@@ -261,6 +285,12 @@
 
         <div id="infoPanel" class="info-panel hidden">
             <div id="infoContent"></div>
+        </div>
+
+        <!-- Camera State HUD -->
+        <div id="cameraStatePanel" class="camera-state-panel">
+            <div class="hud-title">Camera State</div>
+            <div id="cameraStateContent">Pos: 0.00, 0.00, 0.00<br>Rot: P: 0.0° Y: 0.0° R: 0.0°</div>
         </div>
 
         <!-- Info Modal Popup -->
@@ -411,11 +441,86 @@
 
         // Default focal length (pixel-space, sane default for 512px view)
         const DEFAULT_FOCAL_LENGTH = 600;
-        const PREVIEW_FRAME_INTERVAL_MS = 1000 / 12;
+        const PREVIEW_FRAME_INTERVAL_MS = 1000 / 60; // Upgraded to smooth 60 FPS
         const IDLE_HEARTBEAT_MS = 5000;
 
         function invalidateRender(durationMs = 500) {
             renderActiveUntil = Math.max(renderActiveUntil, performance.now() + durationMs);
+        }
+
+        // Calculate and update the Camera State HUD values (YXZ Euler execution order)
+        function updateCameraStateHUD() {
+            if (!camera) return;
+
+            // Normalize position coordinates to prevent floating sign jitter around zero
+            let px = camera.position.x;
+            let py = camera.position.y;
+            let pz = camera.position.z;
+
+            if (Math.abs(px) < 0.005) px = 0;
+            if (Math.abs(py) < 0.005) py = 0;
+            if (Math.abs(pz) < 0.005) pz = 0;
+
+            const posX = px.toFixed(2);
+            const posY = py.toFixed(2);
+            const posZ = pz.toFixed(2);
+
+            // Extract quaternion and normalize to prevent numerical calculations from micro-drifting
+            const q = camera.rotation;
+            let w = q.w;
+            let x = q.x;
+            let y = q.y;
+            let z = q.z;
+
+            const len = Math.hypot(x, y, z, w);
+            if (len > 0.0001) {
+                w /= len;
+                x /= len;
+                y /= len;
+                z /= len;
+            } else {
+                w = 1; x = 0; y = 0; z = 0;
+            }
+
+            // Standard YXZ transformation matrix parsing
+            const r11 = 1 - 2 * y * y - 2 * z * z;
+            const r13 = 2 * x * z + 2 * y * w;
+            const r21 = 2 * x * y + 2 * z * w;
+            const r22 = 1 - 2 * x * x - 2 * z * z;
+            const r23 = 2 * y * z - 2 * x * w;
+            const r31 = 2 * x * z - 2 * y * w;
+            const r33 = 1 - 2 * x * x - 2 * y * y;
+
+            const clamp = (val, low, high) => Math.max(low, Math.min(high, val));
+
+            const pitchRad = Math.asin(-clamp(r23, -1, 1));
+            let yawRad, rollRad;
+
+            if (Math.abs(r23) < 0.99999) {
+                yawRad = Math.atan2(r13, r33);
+                rollRad = Math.atan2(r21, r22);
+            } else {
+                yawRad = Math.atan2(-r31, r11);
+                rollRad = 0.0;
+            }
+
+            let pitchDeg = pitchRad * (180 / Math.PI);
+            let yawDeg = yawRad * (180 / Math.PI);
+            let rollDeg = rollRad * (180 / Math.PI);
+
+            // Suppress sign flips near zero (-0.0)
+            if (Math.abs(pitchDeg) < 0.05) pitchDeg = 0;
+            if (Math.abs(yawDeg) < 0.05) yawDeg = 0;
+            if (Math.abs(rollDeg) < 0.05) rollDeg = 0;
+
+            const pitchStr = pitchDeg.toFixed(1);
+            const yawStr = yawDeg.toFixed(1);
+            const rollStr = rollDeg.toFixed(1);
+
+            const hudContent = document.getElementById('cameraStateContent');
+            if (hudContent) {
+                hudContent.innerHTML = `Pos: ${posX}, ${posY}, ${posZ}<br>Rot: P: ${pitchStr}° Y: ${yawStr}° R: ${rollStr}°`;
+            }
         }
 
         // Initialize the viewer
@@ -454,12 +559,13 @@
                     const active = now < renderActiveUntil;
                     const heartbeat = currentSplat && now - lastRenderTime > IDLE_HEARTBEAT_MS;
 
+                    // Fully synchronized updates to prevent frame rate and calculation mismatches
                     if ((active || heartbeat) && now - lastRenderTime >= interval) {
-                        controls.update();
+						controls.update();
+                        updateRoll(); // Apply the camera roll rotation
                         renderer.render(scene, camera);
+                        updateCameraStateHUD();
                         lastRenderTime = now;
-                    } else if (active) {
-                        controls.update();
                     }
                     animationId = requestAnimationFrame(frame);
                 };
@@ -968,6 +1074,7 @@
                 }, '*');
 
                 console.log('[GaussianViewer] Loaded successfully');
+                updateCameraStateHUD();
                 invalidateRender(2500);
 
             } catch (err) {
@@ -982,11 +1089,12 @@
             }
         }
 
-        // Reset camera to initial position
+		// Reset camera to initial position
         function resetCamera() {
             if (camera && controls) {
                 // Manually release the locks when reset view button clicked
                 isCameraLocked = false;
+                currentRollAngle = 0; // Reset the camera roll angle back to zero
                 setCameraBtn.style.background = '#2563eb';
                 setCameraBtn.textContent = 'Set Camera';
 
@@ -1021,6 +1129,7 @@
                     console.log('[GaussianViewer] Reset camera to default position (0, 0, 5)');
                 }
                 controls.update();
+                updateCameraStateHUD();
                 invalidateRender(1000);
             }
         }
@@ -1273,6 +1382,7 @@
                     }
                 }
 
+                updateCameraStateHUD();
                 invalidateRender(1200);
             }
         }
@@ -1438,6 +1548,123 @@
             }
         }, { passive: true });
 
+		// Track whether Z, C, or Shift are currently being held down
+        const rollKeys = {
+            KeyZ: false,
+            KeyC: false,
+            ShiftLeft: false,
+            ShiftRight: false
+        };
+
+        // Track the total accumulated roll angle in radians
+        let currentRollAngle = 0;
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyZ' || e.code === 'KeyC' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+                rollKeys[e.code] = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyZ' || e.code === 'KeyC' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+                rollKeys[e.code] = false;
+            }
+        });
+
+        // Function that calculates, accumulates, and applies local roll rotation to the camera
+        function updateRoll() {
+            if (!camera) return;
+            let rollDir = 0;
+            if (rollKeys.KeyZ) rollDir -= 1; // Roll Left (counter-clockwise)
+            if (rollKeys.KeyC) rollDir += 1; // Roll Right (clockwise)
+            
+            // Increment or decrement the accumulated roll over time while keys are held
+            if (rollDir !== 0) {
+                const isPrecision = rollKeys.ShiftLeft || rollKeys.ShiftRight;
+                const rollSpeed = isPrecision ? 0.005 : 0.03; // Speed (radians) per frame
+                currentRollAngle += rollDir * rollSpeed;
+                invalidateRender(200);
+            }
+
+            if (currentRollAngle === 0) return;
+
+            // Apply the entire accumulated roll angle on top of OrbitControls' base rotation
+            const q1 = camera.rotation;
+            const theta = currentRollAngle;
+            const w2 = Math.cos(theta / 2);
+            const z2 = Math.sin(theta / 2);
+
+            const w1 = q1.w;
+            const x1 = q1.x;
+            const y1 = q1.y;
+            const z1 = q1.z;
+
+            // Quaternion multiplication for local roll axis rotation
+            const w = w1 * w2 - z1 * z2;
+            const x = x1 * w2 + y1 * z2;
+            const y = y1 * w2 - x1 * z2;
+            const z = z1 * w2 + w1 * z2;
+
+            const len = Math.hypot(x, y, z, w);
+            if (len > 0.0001) {
+                camera.rotation.w = w / len;
+                camera.rotation.x = x / len;
+                camera.rotation.y = y / len;
+                camera.rotation.z = z / len;
+            }
+
+            // Keep the rendering loop active while key is held down
+            invalidateRender(200);
+        }
+
+        // Event listeners
+        document.getElementById('resetCamera').addEventListener('click', resetCamera);
+
+		// Forward keyboard events to ComfyUI parent window
+        window.addEventListener("keydown", (e) => {
+            // Keys used by the 3D viewer that should NEVER leak to ComfyUI
+            const viewerKeys = new Set([
+                'w', 'a', 's', 'd', 'q', 'e', 'r', 'f', 'z', 'c',
+                'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift'
+            ]);
+
+            // If it is a navigation key, stop it here and don't forward it
+            if (viewerKeys.has(e.key.toLowerCase())) {
+                e.stopPropagation();
+                return;
+            }
+
+            // Forward global utility shortcuts (like Ctrl + Enter to Queue)
+            if (window.parent && window.parent !== window) {
+                const forwardedEvent = new KeyboardEvent("keydown", {
+                    key: e.key,
+                    code: e.code,
+                    keyCode: e.keyCode,
+                    which: e.which,
+                    ctrlKey: e.ctrlKey,
+                    altKey: e.altKey,
+                    shiftKey: e.shiftKey,
+                    metaKey: e.metaKey,
+                    bubbles: true,
+                    cancelable: true
+                });
+                window.parent.dispatchEvent(forwardedEvent);
+            }
+        });
+
+        // Prevent stuck camera movement when the iframe loses focus
+        window.addEventListener("blur", () => {
+            const keysToRelease = [
+                'KeyW', 'KeyA', 'KeyS', 'KeyD', 
+                'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 
+                'KeyQ', 'KeyE', 'KeyZ', 'KeyC', 'KeyR', 'KeyF',
+                'ShiftLeft', 'ShiftRight'
+            ];
+            keysToRelease.forEach(code => {
+                window.dispatchEvent(new KeyboardEvent("keyup", { code: code }));
+            });
+        });
+
         // Event listeners
         document.getElementById('resetCamera').addEventListener('click', resetCamera);
 
@@ -1559,6 +1786,7 @@
             // Apply permanent green "Camera Locked" styling
             setCameraBtn.style.background = '#15803d';
             setCameraBtn.textContent = 'Camera Locked';
+            updateCameraStateHUD();
         });
 
         // Listen for messages from parent
