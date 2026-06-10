@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VNCCS Gaussian Splat Viewer</title>
+    <title>DJBFilmz Gaussian Splat Viewer</title>
     <style>
         * {
             margin: 0;
@@ -104,7 +104,7 @@
 
                 // Handle LOAD_MESH_DATA from gaussian_preview.js widget
                 if (data.type === 'LOAD_MESH_DATA') {
-                    console.log('[VNCCS Splat Viewer] Received LOAD_MESH_DATA, size:', data.data?.byteLength || 'N/A');
+                    console.log('[DJBFilmz Splat Viewer] Received LOAD_MESH_DATA, size:', data.data?.byteLength || 'N/A');
                     if (data.data) {
                         loadPlyData(data.data);
                     }
@@ -112,7 +112,7 @@
                 }
 
                 if (data.type === 'load_ply') {
-                    console.log('[VNCCS Splat Viewer] Received PLY data, size:', data.plyData?.byteLength || 'N/A');
+                    console.log('[DJBFilmz Splat Viewer] Received PLY data, size:', data.plyData?.byteLength || 'N/A');
 
                     // Fetch PLY from URL
                     if (data.plyUrl) {
@@ -122,7 +122,7 @@
                             const arrayBuffer = await response.arrayBuffer();
                             loadPlyData(arrayBuffer);
                         } catch (err) {
-                            console.error('[VNCCS Splat Viewer] Error loading PLY:', err);
+                            console.error('[DJBFilmz Splat Viewer] Error loading PLY:', err);
                             document.getElementById('loading').innerHTML =
                                 '<div style="color:#f55">Error loading PLY file</div><div>' + err.message + '</div>';
                         }
@@ -140,7 +140,7 @@
 
             function loadPlyData(arrayBuffer) {
                 if (!worker) {
-                    console.error('[VNCCS Splat Viewer] Worker not initialized');
+                    console.error('[DJBFilmz Splat Viewer] Worker not initialized');
                     pendingPlyData = arrayBuffer;
                     return;
                 }
@@ -163,7 +163,7 @@
                     try {
                         // Don't call original main - we'll handle initialization ourselves
                     } catch (err) {
-                        console.error('[VNCCS Splat Viewer] Error in main:', err);
+                        console.error('[DJBFilmz Splat Viewer] Error in main:', err);
                     }
                 }
 
