@@ -9,6 +9,7 @@ import math
 from pathlib import Path
 import numpy as np
 import torch
+from PIL import Image
 import folder_paths
 
 def _load_preview_camera_tensors_from_json(camera_json):
@@ -427,20 +428,22 @@ class DJBFilmz_HyWorldPreview:
                     "default": "auto",
                     "tooltip": "Coordinate basis of the PLY/camera tensors. Use hyworld2_worldgen for official HYWorld2 trainer outputs."
                 }),
+                "camera_parameters": ("STRING", {"default": "{}"}),
+                "locked_image_path": ("STRING", {"default": ""}),
             },
         }
     
-    RETURN_TYPES = ("STRING", "STRING",)
-    RETURN_NAMES = ("video_path", "ply_path",)
+    RETURN_TYPES = ("IMAGE", "STRING", "STRING",)
+    RETURN_NAMES = ("image", "video_path", "ply_path",)
     OUTPUT_NODE = True
     FUNCTION = "preview"
     CATEGORY = "DJBFilmz/3D"
-    OUTPUT_IS_LIST = (False, False)
+    OUTPUT_IS_LIST = (False, False, False)
     
     @classmethod
-    def IS_CHANGED(cls, ply_path=None, coordinate_basis="auto", **kwargs):
+    def IS_CHANGED(cls, ply_path=None, coordinate_basis="auto", camera_parameters="{}", locked_image_path="", **kwargs):
         coordinate_basis = cls._normalize_coordinate_basis(coordinate_basis)
-        state = [str(ply_path or ""), coordinate_basis]
+        state = [str(ply_path or ""), coordinate_basis, str(camera_parameters), str(locked_image_path)]
         if ply_path:
             try:
                 stat = os.stat(ply_path)
@@ -591,19 +594,52 @@ class DJBFilmz_HyWorldPreview:
         camera_poses=None,
         camera_intrinsics=None,
         coordinate_basis="auto",
+        camera_parameters="{}",
+        locked_image_path="",
         **kwargs,
     ):
-        """Prepare PLY file for gsplat.js preview."""
+        """Prepare PLY file for gsplat.js preview and process canvas snapshots."""
         coordinate_basis = self._normalize_coordinate_basis(coordinate_basis)
 
-        # If no path provided, we can't preview
+        # Retrieve camera lock snapshot
+        image_tensor = None
+        if locked_image_path:
+            temp_dir = folder_paths.get_temp_directory()
+            input_dir = folder_paths.get_input_directory()
+            
+            clean_filename = os.path.basename(locked_image_path)
+            possible_paths = [
+                os.path.join(temp_dir, clean_filename),
+                os.path.join(temp_dir, locked_image_path),
+                os.path.join(input_dir, clean_filename),
+                os.path.join(input_dir, locked_image_path),
+                locked_image_path
+            ]
+            
+            for p in possible_paths:
+                if os.path.exists(p):
+                    try:
+                        img = Image.open(p).convert("RGB")
+                        img_np = np.array(img).astype(np.float32) / 255.0
+                        image_tensor = torch.from_numpy(img_np).unsqueeze(0)
+                        print(f"[DJBFilmz_HyWorldPreview] Successfully loaded camera lock snapshot: {p}")
+                        break
+                    except Exception as e:
+                        print(f"[DJBFilmz_HyWorldPreview] Error reading snapshot from {p}: {e}")
+
+        # Construct a standard black fallback image if no camera lock snapshot is configured yet
+        if image_tensor is None:
+            image_tensor = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+            print("[DJBFilmz_HyWorldPreview] No active camera lock. Returning blank fallback image.")
+
+        # If no path provided, we can't preview further
         if not ply_path:
-            return {"ui": {}, "result": ("", "")}
+            return {"ui": {}, "result": (image_tensor, "", "")}
         
         # Validate ply_path
         if not os.path.exists(ply_path):
             print(f"[DJBFilmz_HyWorldPreview] PLY file not found: {ply_path}")
-            return {"ui": {"error": [f"File not found: {ply_path}"]}, "result": ("", "")}
+            return {"ui": {"error": [f"File not found: {ply_path}"]}, "result": (image_tensor, "", "")}
 
         output_dir = folder_paths.get_output_directory()
         ply_info = self._view_info_for_path(ply_path)
@@ -694,14 +730,11 @@ class DJBFilmz_HyWorldPreview:
         
         # Add camera parameters if provided
         extrinsics = self._camera_poses_to_preview_extrinsics(camera_poses, camera_coordinate_basis)
-        # Do not forward WorldMirror intrinsics to the browser viewer by default:
-        # viewer_gaussian.html switches into native-resolution rendering whenever
-        # intrinsics are present, which is much heavier for multi-million splats.
         if extrinsics is not None:
             ui_data["extrinsics"] = [extrinsics]
         
         print(f"✅ [DJBFilmz_HyWorldPreview] UI data ready. Returning to frontend.")
-        return {"ui": ui_data, "result": (video_path, ply_path)}
+        return {"ui": ui_data, "result": (image_tensor, video_path, ply_path)}
 
 
 class DJBFilmz_LoadPLYFile:

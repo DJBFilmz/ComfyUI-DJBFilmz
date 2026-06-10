@@ -9,10 +9,10 @@ import { app } from "../../../scripts/app.js";
 const EXTENSION_FOLDER = (() => {
     const url = import.meta.url;
     const match = url.match(/\/extensions\/([^/]+)\//);
-    return match ? match[1] : "ComfyUI_VNCCS";
+    return match ? match[1] : "ComfyUI_DJBFilmz";
 })();
 
-console.log("[VNCCS.GaussianPreview] Loading extension...");
+console.log("[DJBFilmz.GaussianPreview] Loading extension...");
 
 const COORDINATE_BASIS_VALUES = new Set(["auto", "worldmirror", "hyworld2_worldgen"]);
 
@@ -54,7 +54,7 @@ function ensureCoordinateBasisWidget(node, value) {
     widget.value = nextValue;
     node.properties.coordinate_basis = nextValue;
 
-    if (!widget._vnccsCoordinateBasisPersistent) {
+    if (!widget._djbfilmzCoordinateBasisPersistent) {
         const originalCallback = widget.callback;
         widget.callback = function (newValue, ...args) {
             const normalized = normalizeCoordinateBasis(newValue);
@@ -65,12 +65,12 @@ function ensureCoordinateBasisWidget(node, value) {
                 return originalCallback.call(this, normalized, ...args);
             }
         };
-        widget._vnccsCoordinateBasisPersistent = true;
+        widget._djbfilmzCoordinateBasisPersistent = true;
     }
 }
 
 app.registerExtension({
-    name: "vnccs.gaussianpreview",
+    name: "djbfilmz.gaussianpreview",
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
 		if (nodeData.name === "DJBFilmz_HyWorldPreview") {
@@ -80,6 +80,20 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
                 ensureCoordinateBasisWidget(this);
+
+                const node = this;
+
+                // Find the existing widgets automatically created from Python INPUT_TYPES
+                const camParamsWidget = this.widgets?.find(w => w.name === "camera_parameters");
+                const lockedImageWidget = this.widgets?.find(w => w.name === "locked_image_path");
+
+                // Collapse their size so they do not clutter the node UI, keeping them fully serializable
+                if (camParamsWidget) {
+                    camParamsWidget.computeSize = () => [0, 0];
+                }
+                if (lockedImageWidget) {
+                    lockedImageWidget.computeSize = () => [0, 0];
+                }
 
                 // Create container for viewer + info panel
                 const container = document.createElement("div");
@@ -97,8 +111,6 @@ app.registerExtension({
                 iframe.style.minHeight = "0";
                 iframe.style.border = "none";
                 iframe.style.backgroundColor = "#1a1a1a";
-                iframe.allowFullscreen = true;
-                iframe.setAttribute("allow", "fullscreen; clipboard-write");
 
                 // Point to gsplat.js HTML viewer (with cache buster)
                 iframe.src = `/extensions/${EXTENSION_FOLDER}/gaussian_preview/static/viewer_gaussian.html?v=` + Date.now();
@@ -126,10 +138,6 @@ app.registerExtension({
                     setValue(v) { }
                 });
 
-                // Store reference to node for dynamic widget sizing. The node
-                // size is the source of truth; resizing the node reveals more or
-                // less of the 3D viewport without changing scene framing.
-                const node = this;
                 widget.computeSize = function () {
                     const isNodeResizeClamp = app.canvas?.resizing_node === node;
                     const width = Math.max(240, node.size[0] - 20);
@@ -153,57 +161,65 @@ app.registerExtension({
 
                 // Listen for messages from iframe
                 window.addEventListener('message', async (event) => {
-                    // Handle screenshot messages
-                    if (event.data.type === 'SCREENSHOT' && event.data.image) {
-                        try {
-                            // Convert base64 data URL to blob
-                            const base64Data = event.data.image.split(',')[1];
-                            const byteString = atob(base64Data);
-                            const arrayBuffer = new ArrayBuffer(byteString.length);
-                            const uint8Array = new Uint8Array(arrayBuffer);
-
-                            for (let i = 0; i < byteString.length; i++) {
-                                uint8Array[i] = byteString.charCodeAt(i);
-                            }
-
-                            const blob = new Blob([uint8Array], { type: 'image/png' });
-
-                            // Generate filename with timestamp
-                            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                            const filename = `gaussian-screenshot-${timestamp}.png`;
-
-                            // Create FormData for upload
-                            const formData = new FormData();
-                            formData.append('image', blob, filename);
-                            formData.append('type', 'output');
-                            formData.append('subfolder', '');
-
-                            // Upload to ComfyUI backend
-                            const response = await fetch('/upload/image', {
-                                method: 'POST',
-                                body: formData
-                            });
-
-                            if (response.ok) {
-                                const result = await response.json();
-                            } else {
-                                throw new Error(`Upload failed: ${response.status}`);
-                            }
-
-                        } catch (error) {
-                            console.error('[GeomPack Gaussian] Error saving screenshot:', error);
-                        }
+                    // Safety check: ignore messages not coming from this node's iframe
+                    if (event.source !== iframe.contentWindow) {
+                        return;
                     }
-                    // Handle copy image to clipboard messages
-                    else if (event.data.type === 'COPY_IMAGE' && event.data.success) {
-                    }
-                    else if (event.data.type === 'COPY_IMAGE' && !event.data.success) {
-                    }
+
                     // Handle error messages from iframe
-                    else if (event.data.type === 'MESH_ERROR' && event.data.error) {
+                    if (event.data.type === 'MESH_ERROR' && event.data.error) {
                         if (infoPanel) {
                             infoPanel.innerHTML = `<div style="color: #ff6b6b;">Error: ${event.data.error}</div>`;
                         }
+                    }
+
+                    // Handle camera lock and canvas snapshot upload
+                    if (event.data.type === 'SET_CAMERA') {
+                        const cameraWidget = node.widgets?.find(w => w.name === "camera_parameters");
+                        const pathWidget = node.widgets?.find(w => w.name === "locked_image_path");
+
+                        // If payload was cleared (user unlocked view)
+                        if (event.data.camera === null) {
+                            if (cameraWidget) cameraWidget.value = "{}";
+                            if (pathWidget) pathWidget.value = "";
+                            console.log("[DJBFilmz.GaussianPreview] Camera lock cleared");
+                        } else {
+                            if (cameraWidget) {
+                                cameraWidget.value = JSON.stringify(event.data.camera);
+                            }
+
+                            if (event.data.image_data) {
+                                try {
+                                    // Convert base64 preview back to a raw blob
+                                    const res = await fetch(event.data.image_data);
+                                    const blob = await res.blob();
+
+                                    const formData = new FormData();
+                                    formData.append("image", blob, `gaussian_lock_${Date.now()}.png`);
+                                    formData.append("type", "temp");
+                                    formData.append("overwrite", "true");
+
+                                    // Upload image directly to ComfyUI's web server
+                                    const uploadResponse = await fetch("/upload/image", {
+                                        method: "POST",
+                                        body: formData
+                                    });
+
+                                    if (uploadResponse.ok) {
+                                        const uploadResult = await uploadResponse.json();
+                                        if (pathWidget) {
+                                            pathWidget.value = uploadResult.name;
+                                            console.log("[DJBFilmz.GaussianPreview] Lock image uploaded:", uploadResult.name);
+                                        }
+                                    } else {
+                                        console.error("[DJBFilmz.GaussianPreview] Failed to upload locked image snapshot");
+                                    }
+                                } catch (err) {
+                                    console.error("[DJBFilmz.GaussianPreview] Error handling snapshot upload:", err);
+                                }
+                            }
+                        }
+                        app.canvas.setDirty(true);
                     }
                 });
 
@@ -264,7 +280,11 @@ app.registerExtension({
                                 }
                                 const arrayBuffer = await response.arrayBuffer();
 
-                                // Send the data to iframe with camera parameters
+                                // Fetch active camera lock parameter widget value to preserve view
+                                const cameraWidget = node.widgets?.find(w => w.name === "camera_parameters");
+                                const cameraParamsVal = cameraWidget ? cameraWidget.value : "{}";
+
+                                // Send the data to iframe with camera parameters and active locks
                                 iframe.contentWindow.postMessage({
                                     type: "LOAD_MESH_DATA",
                                     data: arrayBuffer,
@@ -274,10 +294,11 @@ app.registerExtension({
                                     extrinsics: extrinsics,
                                     intrinsics: intrinsics,
                                     coordinateBasis: coordinateBasis,
+                                    camera_parameters: cameraParamsVal,
                                     timestamp: Date.now()
                                 }, "*", [arrayBuffer]);
                             } catch (error) {
-                                console.error("[VNCCS.GaussianPreview] Error fetching preview data:", error);
+                                console.error("[DJBFilmz.GaussianPreview] Error fetching preview data:", error);
                                 infoPanel.innerHTML = `<div style="color: #ff6b6b;">Error loading preview: ${error.message}</div>`;
                             }
                         };
